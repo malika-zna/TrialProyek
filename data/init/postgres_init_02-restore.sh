@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
 
-if [ ! -f /dumps/odoo.sql ]; then
-  echo "WARNING: /dumps/odoo.sql not found, skipping restore."
+if [ -f /dumps/odoo.sql ]; then
+  echo "Found /dumps/odoo.sql — restoring with psql"
+
+  psql -v ON_ERROR_STOP=1 -U odoo -d odoo -f /dumps/odoo.sql
+  echo "Restore (sql) done."
   exit 0
 fi
-
-echo "Restoring Odoo SQL..."
-psql -v ON_ERROR_STOP=1 -U "$PG_USER" -d odoo < /dumps/odoo.sql
-echo "Restore done."

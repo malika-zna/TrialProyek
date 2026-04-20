@@ -19,7 +19,7 @@
 # tidak perlu spesifikkan versi karena menggunakan docker compose v2
 # tapi tulis saja sesuai contoh
 
-version: "3.9"
+# version: "3.9"
 services:
   postgres:
     image: postgres:15-alpine # sama dengan contoh
@@ -42,19 +42,50 @@ services:
       # fungsinya adalah membuat database yang sudah didefinisikan di file .sql
     healthcheck:
       # healthcheck memeriksa apakah service healthy. test ini adalah perintah yang dijalankan docker untuk periksa kesehatan. pg_isready itu perintah khusu postgres untuk cek kesehatan
-      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-odoo} -d ${PG_DB:-postgres}"]
+      test: ["CMD", "pg_isready", "-q", "-d", "postgres", "-U", "odoo"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s # Memberikan waktu napas saat startup
   
+  # untuk inisialisasi filestore (untuk gui odoo di web)
+  odoo_filestore_init:
+    image: alpine:3.20
+    container_name: trialproyek_odoo_filestore_init
+    volumes:
+      - odoo_data:/var/lib/odoo
+      - ./data/filestore_odoo:/backup:ro
+    command: >
+      sh -lc "
+        mkdir -p /var/lib/odoo/filestore/odoo &&
+        # If backup contains a top-level 'odoo' folder (common), copy its contents.
+        if [ -d /backup/odoo ]; then
+          echo 'Copying filestore from /backup/odoo ...' &&
+          rm -rf /var/lib/odoo/filestore/odoo &&
+          cp -a /backup/odoo/. /var/lib/odoo/filestore/odoo &&
+          echo 'Filestore copy done.';
+        # Otherwise, if backup itself contains hash directories (00,02,...), copy them into filestore.
+        elif ls -A /backup >/dev/null 2>&1; then
+          echo 'Copying filestore from /backup (root contains hash dirs) ...' &&
+          rm -rf /var/lib/odoo/filestore/odoo &&
+          cp -a /backup/. /var/lib/odoo/filestore/odoo &&
+          echo 'Filestore copy done.';
+        else
+          echo 'WARNING: /backup is empty or does not look like an Odoo filestore; skipping';
+        fi
+      "
+
   odoo:
     image: odoo:17.0
     container_name: trialproyek_odoo
     ports:
       - "8069:8069"
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
+      odoo_filestore_init:
+        condition: service_completed_successfully
     environment:
       - HOST=postgres
       - USER=${PG_USER:-odoo}
