@@ -1,0 +1,137 @@
+# latihan proyek BI
+#
+# Arsitektur:
+#   postgres    — Database Odoo + metadata Metabase
+#   odoo        — ERP (modul sales, purchase, inventory)
+#   clickhouse  — Data Warehouse: Bronze, Silver, Gold
+#   app         — ETL Python 
+#   dbt         — Transformasi dbt 
+#   metabase    — Dashboard BI 
+#
+# Urutan penggunaan:
+#   1. docker compose up -d postgres clickhouse
+#   2. docker compose up -d odoo
+#   3. docker compose run --rm app
+#   4. docker compose run --rm dbt
+#   5. docker compose up -d metabase
+
+
+# tidak perlu spesifikkan versi karena menggunakan docker compose v2
+# tapi tulis saja sesuai contoh
+
+version: "3.9"
+services:
+  postgres:
+    image: postgres:15-alpine # sama dengan contoh
+    container_name: trialproyek_postgres
+    ports:
+      - "5432:5432" # pastikan setelah strip ada spasi
+    restart: unless-stopped
+    environment:
+      # - POSTGRES_DB=${PG_DB:-postgres}  ini template penulisan vscode, tapi agar lebih mudah dibaca, pakai map (:) saja
+      POSTGRES_DB:       ${PG_DB:-postgres}
+      POSTGRES_USER:     ${PG_USER:-odoo}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-odoo}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data # ini named volume, diurus oleh docker
+      - ./data/init:/docker-entrypoint-initdb.d:ro
+      - ./data/dumps:/dumps:ro
+      # named volume harus ditulis di volumes: yang sejajar dengan services
+      # - ./scripts/init_postgres.sql:/docker-entrypoint-initdb.d/init.sql:ro # ini bind mount
+      # bind mount ini memetakan file init_postgres.sql dari folder scripts di proyek menjadi file init.sql di folder docker-entrypoint-initdb.d tapi file init_postgres.sql ini hanya read-only, tidak bisa diubah oleh docker
+      # fungsinya adalah membuat database yang sudah didefinisikan di file .sql
+    healthcheck:
+      # healthcheck memeriksa apakah service healthy. test ini adalah perintah yang dijalankan docker untuk periksa kesehatan. pg_isready itu perintah khusu postgres untuk cek kesehatan
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-odoo} -d ${PG_DB:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  
+  odoo:
+    image: odoo:17.0
+    container_name: trialproyek_odoo
+    ports:
+      - "8069:8069"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - HOST=postgres
+      - USER=${PG_USER:-odoo}
+      - PASSWORD=${PG_PASSWORD:-odoo}
+    volumes:
+      - odoo_data:/var/lib/odoo
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8069/web/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s # Memberi waktu Odoo untuk inisialisasi database pertama kali
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3
+    container_name: trialproyek_clickhouse
+    restart: unless-stopped
+    ports:
+      - "8123:8123"   # HTTP interface (digunakan ETL, dbt, Metabase)
+      - "9000:9000"   # Native interface (opsional)
+    environment:
+      CLICKHOUSE_DB:                      default
+      CLICKHOUSE_USER:                    ${CH_USER:-default}
+      CLICKHOUSE_PASSWORD:                ${CH_PASSWORD:-}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8123/ping | grep -q Ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  metabase:
+    # Docker tidak mencari gambar di internet, build image sendiri berdasarkan instruksi yang ada di Dockerfile.metabase di folder yang sama. Biasanya dilakukan kalo mau menambahkan plugin atau konfigurasi khusus ke dalam Metabase.
+    # isi file dockerfile.metabase sebenarnya hanya 2 baris, 1 untuk spesifikkan versi, satunya menjelaskan port yang dipakai
+    # bisa langsung pakai image: saja daripada build: kaya gini, tapi akan lebih mudah kalau mau kustomisasi di masa depan, tinggal ubah dockerfile.metabase. terlihat lebih profesional juga karena memisahkan pengaturan environment di compose dan pengaturan mesin di dockerfile
+    # kalau build: . saja, artinya akan gunakan file Dockerfile di root, kalau nama filenya bukan Dockerfile harus spesifikkan context dan dockerfile kaya gini
+    build:
+      # context = subdirectory tempat file dockerfile
+      context: .
+      # ini nama file yang instruksinya digunakan
+      dockerfile: Dockerfile.metabase
+    container_name: trialproyek_metabase
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    # metabase tidak akan jalan kalau postgres dan clickhouse belum healthy
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    environment:
+      # Metabase menyimpan metadata-nya di PostgreSQL. Metabase butuh tempat untuk menyimpan "ingatannya".
+      MB_DB_TYPE:   postgres
+      MB_DB_DBNAME: ${PG_DB:-postgres}
+      MB_DB_PORT:   "5432"
+      MB_DB_USER:   ${PG_USER:-odoo}
+      MB_DB_PASS:   ${PG_PASSWORD:-odoo}
+      MB_DB_HOST:   postgres
+    volumes:
+      - metabase_data:/metabase-data
+
+# harus ditulis karena pakai named volume
+volumes:
+  postgres_data:
+    name: trialproyek_postgres_data
+  clickhouse_data:
+    name: trialproyek_clickhouse_data
+  metabase_data:
+    name: trialproyek_metabase_data
+  odoo_data:
+    name: trialproyek_odoo_data
+
+# network bisa dicek pakai docker network ls
+# Jika tidak tulis ini, Docker beri nama jaringan secara otomatis mengikuti nama folder proyek. Dengan menentukan name, kita memastikan jaringannya punya nama yang konsisten. Ini berguna kalau nanti ada kontainer lain di luar file Compose ini yang mau bergabung ke jaringan yang sama.
+networks:
+  default:
+    name: trialproyek_network
