@@ -7,5 +7,5 @@ if [ ! -f /dumps/odoo.sql ]; then
 fi
 
 echo "Restoring Odoo SQL..."
-psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d odoo < /dumps/odoo.sql
+psql -v ON_ERROR_STOP=1 -U "$PG_USER" -d odoo < /dumps/odoo.sql
 echo "Restore done."
