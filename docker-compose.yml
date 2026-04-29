@@ -1,54 +1,37 @@
-# latihan proyek BI
+# proyek BI kelompok 7 KBA
 #
 # Arsitektur:
 #   postgres    — Database Odoo + metadata Metabase
 #   odoo        — ERP (modul sales, purchase, inventory)
 #   clickhouse  — Data Warehouse: Bronze, Silver, Gold
-#   app         — ETL Python 
-#   dbt         — Transformasi dbt 
 #   metabase    — Dashboard BI 
 #
 # Urutan penggunaan:
-#   1. docker compose up -d postgres clickhouse
-#   2. docker compose up -d odoo
-#   3. docker compose run --rm app
-#   4. docker compose run --rm dbt
-#   5. docker compose up -d metabase
+#   1. docker compose up -d
+#   2. ...
 
-
-# tidak perlu spesifikkan versi karena menggunakan docker compose v2
-# tapi tulis saja sesuai contoh
-
-# version: "3.9"
 services:
   postgres:
-    image: postgres:15-alpine # sama dengan contoh
+    image: postgres:15-alpine
     container_name: trialproyek_postgres
     ports:
-      - "5432:5432" # pastikan setelah strip ada spasi
+      - "5433:5432"
     restart: unless-stopped
     environment:
-      # - POSTGRES_DB=${PG_DB:-postgres}  ini template penulisan vscode, tapi agar lebih mudah dibaca, pakai map (:) saja
       POSTGRES_DB:       ${PG_DB:-postgres}
       POSTGRES_USER:     ${PG_USER:-odoo}
       POSTGRES_PASSWORD: ${PG_PASSWORD:-odoo}
     volumes:
-      - postgres_data:/var/lib/postgresql/data # ini named volume, diurus oleh docker
+      - postgres_data:/var/lib/postgresql/data
       - ./data/init:/docker-entrypoint-initdb.d:ro
       - ./data/dumps:/dumps:ro
-      # named volume harus ditulis di volumes: yang sejajar dengan services
-      # - ./scripts/init_postgres.sql:/docker-entrypoint-initdb.d/init.sql:ro # ini bind mount
-      # bind mount ini memetakan file init_postgres.sql dari folder scripts di proyek menjadi file init.sql di folder docker-entrypoint-initdb.d tapi file init_postgres.sql ini hanya read-only, tidak bisa diubah oleh docker
-      # fungsinya adalah membuat database yang sudah didefinisikan di file .sql
     healthcheck:
-      # healthcheck memeriksa apakah service healthy. test ini adalah perintah yang dijalankan docker untuk periksa kesehatan. pg_isready itu perintah khusu postgres untuk cek kesehatan
       test: ["CMD", "pg_isready", "-q", "-d", "postgres", "-U", "odoo"]
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 10s # Memberikan waktu napas saat startup
+      start_period: 10s
   
-  # untuk inisialisasi filestore (untuk gui odoo di web)
   odoo_filestore_init:
     image: alpine:3.20
     container_name: trialproyek_odoo_filestore_init
@@ -58,20 +41,20 @@ services:
     command: >
       sh -lc "
         mkdir -p /var/lib/odoo/filestore/odoo &&
-        # If backup contains a top-level 'odoo' folder (common), copy its contents.
+        # Kalau backup mengandung top-level 'odoo' folder, copy kontennya.
         if [ -d /backup/odoo ]; then
-          echo 'Copying filestore from /backup/odoo ...' &&
+          echo 'Menyalin filestore dari /backup/odoo ...' &&
           rm -rf /var/lib/odoo/filestore/odoo &&
           cp -a /backup/odoo/. /var/lib/odoo/filestore/odoo &&
-          echo 'Filestore copy done.';
-        # Otherwise, if backup itself contains hash directories (00,02,...), copy them into filestore.
+          echo 'Filestore copy selesai.';
+        # Kalau backup mengandung hash directories (00,02,...), copy ke filestore.
         elif ls -A /backup >/dev/null 2>&1; then
-          echo 'Copying filestore from /backup (root contains hash dirs) ...' &&
+          echo 'Menyalin filestore dari /backup ...' &&
           rm -rf /var/lib/odoo/filestore/odoo &&
           cp -a /backup/. /var/lib/odoo/filestore/odoo &&
-          echo 'Filestore copy done.';
+          echo 'Filestore copy selesai.';
         else
-          echo 'WARNING: /backup is empty or does not look like an Odoo filestore; skipping';
+          echo 'WARNING: /backup kosong atau tidak berisi Odoo filestore; skipping';
         fi
       "
 
@@ -97,15 +80,15 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 30s # Memberi waktu Odoo untuk inisialisasi database pertama kali
+      start_period: 30s
 
   clickhouse:
     image: clickhouse/clickhouse-server:24.3
     container_name: trialproyek_clickhouse
     restart: unless-stopped
     ports:
-      - "8123:8123"   # HTTP interface (digunakan ETL, dbt, Metabase)
-      - "9000:9000"   # Native interface (opsional)
+      - "8123:8123"
+      - "9000:9000" 
     environment:
       CLICKHOUSE_DB:                      default
       CLICKHOUSE_USER:                    ${CH_USER:-default}
@@ -120,37 +103,56 @@ services:
       retries: 5
 
   metabase:
-    # Docker tidak mencari gambar di internet, build image sendiri berdasarkan instruksi yang ada di Dockerfile.metabase di folder yang sama. Biasanya dilakukan kalo mau menambahkan plugin atau konfigurasi khusus ke dalam Metabase.
-    # isi file dockerfile.metabase sebenarnya hanya 2 baris, 1 untuk spesifikkan versi, satunya menjelaskan port yang dipakai
-    # bisa langsung pakai image: saja daripada build: kaya gini, tapi akan lebih mudah kalau mau kustomisasi di masa depan, tinggal ubah dockerfile.metabase. terlihat lebih profesional juga karena memisahkan pengaturan environment di compose dan pengaturan mesin di dockerfile
-    # kalau build: . saja, artinya akan gunakan file Dockerfile di root, kalau nama filenya bukan Dockerfile harus spesifikkan context dan dockerfile kaya gini
     build:
-      # context = subdirectory tempat file dockerfile
       context: .
-      # ini nama file yang instruksinya digunakan
       dockerfile: Dockerfile.metabase
     container_name: trialproyek_metabase
     restart: unless-stopped
     ports:
       - "3000:3000"
-    # metabase tidak akan jalan kalau postgres dan clickhouse belum healthy
     depends_on:
       postgres:
         condition: service_healthy
       clickhouse:
         condition: service_healthy
     environment:
-      # Metabase menyimpan metadata-nya di PostgreSQL. Metabase butuh tempat untuk menyimpan "ingatannya".
       MB_DB_TYPE:   postgres
-      MB_DB_DBNAME: ${PG_DB:-postgres}
+      MB_DB_DBNAME: metabase_db
       MB_DB_PORT:   "5432"
       MB_DB_USER:   ${PG_USER:-odoo}
       MB_DB_PASS:   ${PG_PASSWORD:-odoo}
       MB_DB_HOST:   postgres
     volumes:
       - metabase_data:/metabase-data
+      - ./data/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 15s      
+      timeout: 5s       
+      retries: 10       
+      start_period: 45s
 
-# harus ditulis karena pakai named volume
+  python_etl:
+    build: .
+    container_name: trialproyek_etl_runner
+    restart: always
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PG_HOST=trialproyek_postgres
+      - PG_PORT=5432
+      - PG_DB=odoo
+      - PG_USER=${PG_USER:-odoo}
+      - PG_PASSWORD=${PG_PASSWORD:-odoo}
+      - DBT_PROFILES_DIR=/app
+      - CH_HOST=trialproyek_clickhouse
+    volumes:
+      - .:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+
 volumes:
   postgres_data:
     name: trialproyek_postgres_data
@@ -161,8 +163,6 @@ volumes:
   odoo_data:
     name: trialproyek_odoo_data
 
-# network bisa dicek pakai docker network ls
-# Jika tidak tulis ini, Docker beri nama jaringan secara otomatis mengikuti nama folder proyek. Dengan menentukan name, kita memastikan jaringannya punya nama yang konsisten. Ini berguna kalau nanti ada kontainer lain di luar file Compose ini yang mau bergabung ke jaringan yang sama.
 networks:
   default:
     name: trialproyek_network
